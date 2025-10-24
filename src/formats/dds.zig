@@ -107,6 +107,82 @@ fn interpolate(T: type, from: T, to: T, index: usize, steps: usize) T {
     return @truncate((steps - index) * @as(usize, from) / steps + index * @as(usize, to) / steps);
 }
 
+const BC1Block = packed struct(u64) {
+    ref_color_0: u16,
+    ref_color_1: u16,
+    idxs_color: u32,
+
+    pub fn getColorTableStd(self: BC1Block) [4]color.Rgb24 {
+        const c0 = @as(color.Rgb565, @bitCast(self.ref_color_0));
+        const c1 = @as(color.Rgb565, @bitCast(self.ref_color_1));
+
+        return .{
+            color.Rgb24.from.color(c0),
+            color.Rgb24.from.color(c1),
+            color.Rgb24.from.color(color.Rgb565{
+                .r = interpolate(u5, c0.r, c1.r, 1, 3),
+                .g = interpolate(u6, c0.g, c1.g, 1, 3),
+                .b = interpolate(u5, c0.b, c1.b, 1, 3),
+            }),
+            color.Rgb24.from.color(color.Rgb565{
+                .r = interpolate(u5, c0.r, c1.r, 2, 3),
+                .g = interpolate(u6, c0.g, c1.g, 2, 3),
+                .b = interpolate(u5, c0.b, c1.b, 2, 3),
+            }),
+        };
+    }
+
+    pub fn getColorTableAlpha(self: BC1Block) [4]color.Rgb24 {
+        const c0 = @as(color.Rgb565, @bitCast(self.ref_color_0));
+        const c1 = @as(color.Rgb565, @bitCast(self.ref_color_1));
+
+        return .{
+            color.Rgb24.from.color(c0),
+            color.Rgb24.from.color(c1),
+            color.Rgb24.from.color(color.Rgb565{
+                .r = interpolate(u5, c0.r, c1.r, 1, 2),
+                .g = interpolate(u6, c0.g, c1.g, 1, 2),
+                .b = interpolate(u5, c0.b, c1.b, 1, 2),
+            }),
+            color.Rgb24.from.rgb(0, 0, 0),
+        };
+    }
+};
+
+const BC2Block = packed struct(u128) {
+    alphas: u64,
+    bc1: BC1Block,
+};
+
+const BC3Block = packed struct(u128) {
+    ref_alpha_0: u8,
+    ref_alpha_1: u8,
+    idxs_alpha: u48,
+    bc1: BC1Block,
+
+    pub fn getAlphaTable(self: BC3Block) [8]u8 {
+        return if (self.ref_alpha_0 > self.ref_alpha_1) .{
+            self.ref_alpha_0,
+            self.ref_alpha_1,
+            interpolate(u8, self.ref_alpha_0, self.ref_alpha_1, 1, 7),
+            interpolate(u8, self.ref_alpha_0, self.ref_alpha_1, 2, 7),
+            interpolate(u8, self.ref_alpha_0, self.ref_alpha_1, 3, 7),
+            interpolate(u8, self.ref_alpha_0, self.ref_alpha_1, 4, 7),
+            interpolate(u8, self.ref_alpha_0, self.ref_alpha_1, 5, 7),
+            interpolate(u8, self.ref_alpha_0, self.ref_alpha_1, 6, 7),
+        } else .{
+            self.ref_alpha_0,
+            self.ref_alpha_1,
+            interpolate(u8, self.ref_alpha_0, self.ref_alpha_1, 1, 5),
+            interpolate(u8, self.ref_alpha_0, self.ref_alpha_1, 2, 5),
+            interpolate(u8, self.ref_alpha_0, self.ref_alpha_1, 3, 5),
+            interpolate(u8, self.ref_alpha_0, self.ref_alpha_1, 4, 5),
+            0,
+            255,
+        };
+    }
+};
+
 pub const DDS = struct {
     header: Header = undefined,
     header10: HeaderDXT10 = undefined,
@@ -204,56 +280,17 @@ pub const DDS = struct {
         const num_blocks = block_width * block_height;
 
         for (0..num_blocks) |block_id| {
-            const ref_alpha_0 = try reader.takeByte();
-            const ref_alpha_1 = try reader.takeByte();
-            const idxs_alpha = try reader.takeInt(u48, .little);
-            const ref_color_0 = try reader.takeInt(u16, .little);
-            const ref_color_1 = try reader.takeInt(u16, .little);
-            const idxs_color = try reader.takeInt(u32, .little);
-            var alphas: [16]u8 = undefined;
-
-            if (ref_alpha_0 > ref_alpha_1) {
-                alphas[0] = ref_alpha_0;
-                alphas[1] = ref_alpha_1;
-                alphas[2] = interpolate(u8, ref_alpha_0, ref_alpha_1, 1, 7);
-                alphas[3] = interpolate(u8, ref_alpha_0, ref_alpha_1, 2, 7);
-                alphas[4] = interpolate(u8, ref_alpha_0, ref_alpha_1, 3, 7);
-                alphas[5] = interpolate(u8, ref_alpha_0, ref_alpha_1, 4, 7);
-                alphas[6] = interpolate(u8, ref_alpha_0, ref_alpha_1, 5, 7);
-                alphas[7] = interpolate(u8, ref_alpha_0, ref_alpha_1, 6, 7);
-            } else {
-                alphas[0] = ref_alpha_0;
-                alphas[1] = ref_alpha_1;
-                alphas[2] = interpolate(u8, ref_alpha_0, ref_alpha_1, 1, 5);
-                alphas[3] = interpolate(u8, ref_alpha_0, ref_alpha_1, 2, 5);
-                alphas[4] = interpolate(u8, ref_alpha_0, ref_alpha_1, 3, 5);
-                alphas[5] = interpolate(u8, ref_alpha_0, ref_alpha_1, 4, 5);
-                alphas[6] = 0;
-                alphas[7] = 255;
-            }
-            var colors: [4]color.Rgb24 = undefined;
-            colors[0] = color.Rgb24.from.color(@as(color.Rgb565, @bitCast(ref_color_0)));
-            colors[1] = color.Rgb24.from.color(@as(color.Rgb565, @bitCast(ref_color_1)));
-            const c0 = @as(color.Rgb565, @bitCast(ref_color_0));
-            const c1 = @as(color.Rgb565, @bitCast(ref_color_1));
-            colors[2] = color.Rgb24.from.color(color.Rgb565{
-                .r = interpolate(u5, c0.r, c1.r, 1, 3),
-                .g = interpolate(u6, c0.g, c1.g, 1, 3),
-                .b = interpolate(u5, c0.b, c1.b, 1, 3),
-            });
-            colors[3] = color.Rgb24.from.color(color.Rgb565{
-                .r = interpolate(u5, c0.r, c1.r, 2, 3),
-                .g = interpolate(u6, c0.g, c1.g, 2, 3),
-                .b = interpolate(u5, c0.b, c1.b, 2, 3),
-            });
+            const block = try reader.takeStruct(BC3Block, .little);
+            const alphas = block.getAlphaTable();
+            const colors = block.bc1.getColorTableStd();
 
             const x_start = (block_id % block_width) * 4;
             const y_start = (block_id / block_width) * 4;
 
             for (0..4) |y| {
                 for (0..4) |x| {
-                    const rgb = bitIndex(u32, u2, idxs_color, y * 4 + x);
-                    const a = bitIndex(u48, u3, idxs_alpha, y * 4 + x);
+                    const rgb = bitIndex(u32, u2, block.bc1.idxs_color, y * 4 + x);
+                    const a = bitIndex(u48, u3, block.idxs_alpha, y * 4 + x);
                     pixels.rgba32[(y_start + y) * self.header.width + (x_start + x)] = .{
                         .r = colors[rgb].r,
                         .g = colors[rgb].g,
@@ -275,34 +312,16 @@ pub const DDS = struct {
         const num_blocks = block_width * block_height;
 
         for (0..num_blocks) |block_id| {
-            const alphas = try reader.takeInt(u64, .little);
-            const ref_color_0 = try reader.takeInt(u16, .little);
-            const ref_color_1 = try reader.takeInt(u16, .little);
-            const idxs_color = try reader.takeInt(u32, .little);
-
-            var colors: [4]color.Rgb24 = undefined;
-            colors[0] = color.Rgb24.from.color(@as(color.Rgb565, @bitCast(ref_color_0)));
-            colors[1] = color.Rgb24.from.color(@as(color.Rgb565, @bitCast(ref_color_1)));
-            const c0 = @as(color.Rgb565, @bitCast(ref_color_0));
-            const c1 = @as(color.Rgb565, @bitCast(ref_color_1));
-            colors[2] = color.Rgb24.from.color(color.Rgb565{
-                .r = interpolate(u5, c0.r, c1.r, 1, 3),
-                .g = interpolate(u6, c0.g, c1.g, 1, 3),
-                .b = interpolate(u5, c0.b, c1.b, 1, 3),
-            });
-            colors[3] = color.Rgb24.from.color(color.Rgb565{
-                .r = interpolate(u5, c0.r, c1.r, 2, 3),
-                .g = interpolate(u6, c0.g, c1.g, 2, 3),
-                .b = interpolate(u5, c0.b, c1.b, 2, 3),
-            });
+            const block = try reader.takeStruct(BC2Block, .little);
+            const colors = block.bc1.getColorTableStd();
 
             const x_start = (block_id % block_width) * 4;
             const y_start = (block_id / block_width) * 4;
 
             for (0..4) |y| {
                 for (0..4) |x| {
-                    const rgb = bitIndex(u32, u2, idxs_color, y * 4 + x);
-                    const a = bitIndex(u64, u4, alphas, y * 4 + x);
+                    const rgb = bitIndex(u32, u2, block.bc1.idxs_color, y * 4 + x);
+                    const a = bitIndex(u64, u4, block.alphas, y * 4 + x);
                     pixels.rgba32[(y_start + y) * self.header.width + (x_start + x)] = .{
                         .r = colors[rgb].r,
                         .g = colors[rgb].g,
@@ -325,44 +344,21 @@ pub const DDS = struct {
         const num_blocks = block_width * block_height;
 
         for (0..num_blocks) |block_id| {
-            const ref_color_0 = try reader.takeInt(u16, .little);
-            const ref_color_1 = try reader.takeInt(u16, .little);
-            const idxs_color = try reader.takeInt(u32, .little);
+            const block = try reader.takeStruct(BC1Block, .little);
 
-            var colors: [4]color.Rgb24 = undefined;
-            colors[0] = color.Rgb24.from.color(@as(color.Rgb565, @bitCast(ref_color_0)));
-            colors[1] = color.Rgb24.from.color(@as(color.Rgb565, @bitCast(ref_color_1)));
-            const c0 = @as(color.Rgb565, @bitCast(ref_color_0));
-            const c1 = @as(color.Rgb565, @bitCast(ref_color_1));
+            const colors = if (block.ref_color_0 > block.ref_color_1)
+                block.getColorTableStd()
+            else
+                block.getColorTableAlpha();
 
-            if (ref_color_0 > ref_color_1) {
-                colors[3] = color.Rgb24.from.color(color.Rgb565{
-                    .r = interpolate(u5, c0.r, c1.r, 2, 3),
-                    .g = interpolate(u6, c0.g, c1.g, 2, 3),
-                    .b = interpolate(u5, c0.b, c1.b, 2, 3),
-                });
-                colors[2] = color.Rgb24.from.color(color.Rgb565{
-                    .r = interpolate(u5, c0.r, c1.r, 1, 3),
-                    .g = interpolate(u6, c0.g, c1.g, 1, 3),
-                    .b = interpolate(u5, c0.b, c1.b, 1, 3),
-                });
-            } else {
-                colors[2] = color.Rgb24.from.color(color.Rgb565{
-                    .r = interpolate(u5, c0.r, c1.r, 1, 2),
-                    .g = interpolate(u6, c0.g, c1.g, 1, 2),
-                    .b = interpolate(u5, c0.b, c1.b, 1, 2),
-                });
-                colors[3] = color.Rgb24.from.rgb(0, 0, 0);
-            }
-
-            const has_alpha = !(ref_color_0 > ref_color_1);
+            const has_alpha = !(block.ref_color_0 > block.ref_color_1);
 
             const x_start = (block_id % block_width) * 4;
             const y_start = (block_id / block_width) * 4;
 
             for (0..4) |y| {
                 for (0..4) |x| {
-                    const rgb = bitIndex(u32, u2, idxs_color, y * 4 + x);
+                    const rgb = bitIndex(u32, u2, block.idxs_color, y * 4 + x);
                     pixels.rgba32[(y_start + y) * self.header.width + (x_start + x)] = .{
                         .r = colors[rgb].r,
                         .g = colors[rgb].g,
