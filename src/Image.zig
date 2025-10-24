@@ -16,6 +16,7 @@ const Image = @This();
 
 const SupportedFormats = struct {
     pub const bmp = formats.bmp.BMP;
+    pub const dds = formats.dds.DDS;
     pub const farbfeld = formats.farbfeld.Farbfeld;
     pub const gif = formats.gif.GIF;
     pub const iff = formats.iff.IFF;
@@ -40,6 +41,7 @@ pub const Format = std.meta.DeclEnum(SupportedFormats);
 
 pub const EncoderOptions = union(Format) {
     bmp: SupportedFormats.bmp.EncoderOptions,
+    dds: void,
     farbfeld: void,
     gif: SupportedFormats.gif.EncoderOptions,
     iff: void,
