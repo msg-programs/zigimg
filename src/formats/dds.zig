@@ -92,7 +92,7 @@ pub const PixelFlags = packed struct(u32) {
     unused4: u14 = 0,
 };
 
-const FourCC = enum { DXT1, DXT2, DXT3, DXT4, DXT5 };
+const FourCC = enum { DXT1, DXT2, DXT3, DXT4, DXT5, DX10 };
 
 // fast and loose, hence not pub
 fn bitIndex(Source: type, Dest: type, value: Source, index: usize) Dest {
@@ -266,6 +266,22 @@ pub const DDS = struct {
                     return Image.ReadError.Unsupported;
                 },
             };
+        } else if (self.header.pf.flags.alphaPixels) {
+            return switch (self.header.pf.rgbBitCount) {
+                16 => try self.readUncompressedGA(allocator, reader),
+                else => {
+                    std.debug.print("rgbbitcount {}\n", .{self.header.pf.rgbBitCount});
+                    return Image.ReadError.Unsupported;
+                },
+            };
+        } else if (self.header.pf.flags.luminance) {
+            return switch (self.header.pf.rgbBitCount) {
+                8 => try self.readUncompressedG(allocator, reader),
+                else => {
+                    std.debug.print("rgbbitcount {}\n", .{self.header.pf.rgbBitCount});
+                    return Image.ReadError.Unsupported;
+                },
+            };
         } else {
             return Image.ReadError.Unsupported;
         }
@@ -403,6 +419,38 @@ pub const DDS = struct {
                     .r = @truncate((value & self.header.pf.rBitMask) >> @intCast(@ctz(self.header.pf.rBitMask))),
                     .g = @truncate((value & self.header.pf.gBitMask) >> @intCast(@ctz(self.header.pf.gBitMask))),
                     .b = @truncate((value & self.header.pf.bBitMask) >> @intCast(@ctz(self.header.pf.bBitMask))),
+                };
+            }
+        }
+        return pixels;
+    }
+
+    fn readUncompressedGA(self: DDS, allocator: std.mem.Allocator, reader: *std.Io.Reader) Image.ReadError!color.PixelStorage {
+        const pixels = try color.PixelStorage.init(allocator, .grayscale8Alpha, @as(usize, self.header.width) * @as(usize, self.header.height));
+        errdefer pixels.deinit(allocator);
+
+        for (0..self.header.height) |y| {
+            for (0..self.header.width) |x| {
+                const value = try reader.takeInt(u16, .little);
+                pixels.grayscale8Alpha[y * self.header.width + x] = .{
+                    .value = @truncate((value & self.header.pf.rBitMask) >> @intCast(@ctz(self.header.pf.rBitMask))),
+                    .alpha = @truncate((value & self.header.pf.aBitMask) >> @intCast(@ctz(self.header.pf.aBitMask))),
+                };
+            }
+        }
+        return pixels;
+    }
+
+    fn readUncompressedG(self: DDS, allocator: std.mem.Allocator, reader: *std.Io.Reader) Image.ReadError!color.PixelStorage {
+        const pixels = try color.PixelStorage.init(allocator, .grayscale8, @as(usize, self.header.width) * @as(usize, self.header.height));
+        errdefer pixels.deinit(allocator);
+
+        for (0..self.header.height) |y| {
+            for (0..self.header.width) |x| {
+                const value = try reader.takeInt(u8, .little);
+                pixels.grayscale8[y * self.header.width + x] = .{
+                    .value = value,
+                    // .alpha = @truncate((value & self.header.pf.rBitMask) >> @intCast(@ctz(self.header.pf.rBitMask))),
                 };
             }
         }
