@@ -153,20 +153,17 @@ pub const DDS = struct {
     pub fn read(self: *DDS, allocator: std.mem.Allocator, read_stream: *io.ReadStream) Image.ReadError!color.PixelStorage {
         const reader = read_stream.reader();
 
-        // read header magic value
         const magic = reader.take(DDS_FILE_MAGIC.len) catch return Image.ReadError.InvalidData;
         if (!std.mem.eql(u8, magic, DDS_FILE_MAGIC[0..])) {
             return Image.ReadError.InvalidData;
         }
 
         self.header = reader.takeStruct(Header, .little) catch return Image.ReadError.InvalidData;
-        std.debug.print("{any}\n", .{self.header});
 
         if (self.header.size != 124) return Image.ReadError.InvalidData;
         if (self.header.pf.size != 32) return Image.ReadError.InvalidData;
 
         if (self.header.pf.flags.fourCC) {
-            std.debug.print("fcc: {s}\n", .{self.header.pf.fourCC[0..]});
             const fourCC = std.meta.stringToEnum(FourCC, self.header.pf.fourCC[0..]) orelse {
                 return Image.ReadError.Unsupported;
             };
@@ -208,13 +205,10 @@ pub const DDS = struct {
     }
 
     fn readNonFourCC(self: DDS, allocator: std.mem.Allocator, reader: *std.Io.Reader) Image.ReadError!color.PixelStorage {
-        // always valid unless fourCC is set
-
         if (self.header.pf.flags.rgb and self.header.pf.flags.alphaPixels) {
             return switch (self.header.pf.rgbBitCount) {
                 32 => try self.readUncompressedRGBA(allocator, reader),
                 else => {
-                    std.debug.print("rgbbitcount {}\n", .{self.header.pf.rgbBitCount});
                     return Image.ReadError.Unsupported;
                 },
             };
@@ -223,7 +217,6 @@ pub const DDS = struct {
                 24 => try self.readUncompressedRGB(allocator, reader, 24),
                 32 => try self.readUncompressedRGB(allocator, reader, 32),
                 else => {
-                    std.debug.print("rgbbitcount {}\n", .{self.header.pf.rgbBitCount});
                     return Image.ReadError.Unsupported;
                 },
             };
@@ -231,7 +224,6 @@ pub const DDS = struct {
             return switch (self.header.pf.rgbBitCount) {
                 16 => try self.readUncompressedGA(allocator, reader),
                 else => {
-                    std.debug.print("rgbbitcount {}\n", .{self.header.pf.rgbBitCount});
                     return Image.ReadError.Unsupported;
                 },
             };
@@ -239,7 +231,6 @@ pub const DDS = struct {
             return switch (self.header.pf.rgbBitCount) {
                 8 => try self.readUncompressedG(allocator, reader),
                 else => {
-                    std.debug.print("rgbbitcount {}\n", .{self.header.pf.rgbBitCount});
                     return Image.ReadError.Unsupported;
                 },
             };
