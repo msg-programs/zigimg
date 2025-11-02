@@ -1,24 +1,28 @@
 const color = @import("../color.zig");
 const FormatInterface = @import("../FormatInterface.zig");
 const Image = @import("../Image.zig");
-// const PixelFormat = @import("../pixel_format.zig").PixelFormat;
 const std = @import("std");
 const io = @import("../io.zig");
-const utils = @import("../utils.zig");
-const builtin = @import("builtin");
+
+const e = @import("dds/enums.zig");
+const MiscFlag2 = e.MiscFlag2;
+const D3D10ResourceDimension = e.D3D10ResourceDimension;
+const DXGIFormat = e.DXGIFormat;
+
+const bc = @import("dds/bc.zig");
 
 const DDS_FILE_MAGIC = "DDS ";
 
 const Header = extern struct {
     size: u32 = 124,
-    flags: StructFlags,
+    flags: HeaderFlags,
     height: u32,
     width: u32,
     pitchOrLinearSize: u32, // don't rely on this, compute yourself
     depth: u32,
     mipMapCount: u32,
     reserved1: [11]u32,
-    pf: PixelFormat,
+    pf: PxFmt,
     caps: CapFlags,
     caps2: CapFlags2,
     caps3: u32, // unused
@@ -50,7 +54,7 @@ pub const CapFlags2 = packed struct(u32) {
     unused3: u10 = 0,
 };
 
-pub const StructFlags = packed struct(u32) {
+pub const HeaderFlags = packed struct(u32) {
     caps: bool = true, // required, don't rely on this for reading
     height: bool = true, // required
     width: bool = true, // required
@@ -60,17 +64,29 @@ pub const StructFlags = packed struct(u32) {
     unused2: u4 = 0,
     mipMap: bool, // required if mipmaps are present, don't rely on this for reading
     unused3: u5 = 0,
-    linarSize: bool, // required if pitch is provided for compressed textures
+    linearSize: bool, // required if pitch is provided for compressed textures (?)
     unused4: u3 = 0,
     depth: bool, // required for depth textures
     unused5: u4 = 0,
 };
 
-const HeaderDXT10 = extern struct {};
+const HeaderDXT10 = extern struct {
+    dxgiFormat: DXGIFormat,
+    resourceDimension: D3D10ResourceDimension,
+    miscFlag: MiscFlag,
+    arraySize: u32,
+    miscFlags2: MiscFlag2,
+};
 
-const PixelFormat = extern struct {
+const MiscFlag = packed struct(u32) {
+    unused1: u2,
+    texturecube: bool,
+    unused2: u29,
+};
+
+const PxFmt = extern struct {
     size: u32 = 32,
-    flags: PixelFlags,
+    flags: PxFlags,
     fourCC: [4]u8, // fourcc in flags must be set
     rgbBitCount: u32, // rgb, luminance or yuv in flags must be set
     rBitMask: u32,
@@ -79,7 +95,7 @@ const PixelFormat = extern struct {
     aBitMask: u32, // one of alpha or alphaPixels in flags must be set
 };
 
-pub const PixelFlags = packed struct(u32) {
+pub const PxFlags = packed struct(u32) {
     alphaPixels: bool, // rBitMask, gBitMask, bBitMask, aBitMask are valid (?)
     alpha: bool, // legacy: rgbBitCount and aBitMask are valid
     fourCC: bool, // fourCC is valid
@@ -88,100 +104,11 @@ pub const PixelFlags = packed struct(u32) {
     unused2: u2 = 0,
     yuv: bool, // legacy: {rgb}BitMask fields are valid and used for yuv
     unused3: u7 = 0,
-    luminance: bool, // legacy: rgbBitCount and rBitMask are valid. if alphaPixels is set: 2 channel DDS (?)
+    luminance: bool, // legacy: rgbBitCount and rBitMask are valid. if alphaPixels is set: 2 channel Dds (?)
     unused4: u14 = 0,
 };
 
 const FourCC = enum { DXT1, DXT2, DXT3, DXT4, DXT5, DX10 };
-
-// fast and loose, hence not pub
-fn bitIndex(Source: type, Dest: type, value: Source, index: usize) Dest {
-    const nbits = @typeInfo(Dest).int.bits;
-    const shift = index * nbits;
-    return @truncate(value >> @intCast(shift));
-}
-
-// fast and loose, hence not pub
-// also ha ha INTerpolate
-fn interpolate(T: type, from: T, to: T, index: usize, steps: usize) T {
-    return @truncate((steps - index) * @as(usize, from) / steps + index * @as(usize, to) / steps);
-}
-
-const BC1Block = packed struct(u64) {
-    ref_color_0: u16,
-    ref_color_1: u16,
-    idxs_color: u32,
-
-    pub fn getColorTableStd(self: BC1Block) [4]color.Rgb24 {
-        const c0 = @as(color.Rgb565, @bitCast(self.ref_color_0));
-        const c1 = @as(color.Rgb565, @bitCast(self.ref_color_1));
-
-        return .{
-            color.Rgb24.from.color(c0),
-            color.Rgb24.from.color(c1),
-            color.Rgb24.from.color(color.Rgb565{
-                .r = interpolate(u5, c0.r, c1.r, 1, 3),
-                .g = interpolate(u6, c0.g, c1.g, 1, 3),
-                .b = interpolate(u5, c0.b, c1.b, 1, 3),
-            }),
-            color.Rgb24.from.color(color.Rgb565{
-                .r = interpolate(u5, c0.r, c1.r, 2, 3),
-                .g = interpolate(u6, c0.g, c1.g, 2, 3),
-                .b = interpolate(u5, c0.b, c1.b, 2, 3),
-            }),
-        };
-    }
-
-    pub fn getColorTableAlpha(self: BC1Block) [4]color.Rgb24 {
-        const c0 = @as(color.Rgb565, @bitCast(self.ref_color_0));
-        const c1 = @as(color.Rgb565, @bitCast(self.ref_color_1));
-
-        return .{
-            color.Rgb24.from.color(c0),
-            color.Rgb24.from.color(c1),
-            color.Rgb24.from.color(color.Rgb565{
-                .r = interpolate(u5, c0.r, c1.r, 1, 2),
-                .g = interpolate(u6, c0.g, c1.g, 1, 2),
-                .b = interpolate(u5, c0.b, c1.b, 1, 2),
-            }),
-            color.Rgb24.from.rgb(0, 0, 0),
-        };
-    }
-};
-
-const BC2Block = packed struct(u128) {
-    alphas: u64,
-    bc1: BC1Block,
-};
-
-const BC3Block = packed struct(u128) {
-    ref_alpha_0: u8,
-    ref_alpha_1: u8,
-    idxs_alpha: u48,
-    bc1: BC1Block,
-
-    pub fn getAlphaTable(self: BC3Block) [8]u8 {
-        return if (self.ref_alpha_0 > self.ref_alpha_1) .{
-            self.ref_alpha_0,
-            self.ref_alpha_1,
-            interpolate(u8, self.ref_alpha_0, self.ref_alpha_1, 1, 7),
-            interpolate(u8, self.ref_alpha_0, self.ref_alpha_1, 2, 7),
-            interpolate(u8, self.ref_alpha_0, self.ref_alpha_1, 3, 7),
-            interpolate(u8, self.ref_alpha_0, self.ref_alpha_1, 4, 7),
-            interpolate(u8, self.ref_alpha_0, self.ref_alpha_1, 5, 7),
-            interpolate(u8, self.ref_alpha_0, self.ref_alpha_1, 6, 7),
-        } else .{
-            self.ref_alpha_0,
-            self.ref_alpha_1,
-            interpolate(u8, self.ref_alpha_0, self.ref_alpha_1, 1, 5),
-            interpolate(u8, self.ref_alpha_0, self.ref_alpha_1, 2, 5),
-            interpolate(u8, self.ref_alpha_0, self.ref_alpha_1, 3, 5),
-            interpolate(u8, self.ref_alpha_0, self.ref_alpha_1, 4, 5),
-            0,
-            255,
-        };
-    }
-};
 
 pub const DDS = struct {
     header: Header = undefined,
@@ -224,9 +151,9 @@ pub const DDS = struct {
     }
 
     pub fn read(self: *DDS, allocator: std.mem.Allocator, read_stream: *io.ReadStream) Image.ReadError!color.PixelStorage {
-        // read header magic value
         const reader = read_stream.reader();
 
+        // read header magic value
         const magic = reader.take(DDS_FILE_MAGIC.len) catch return Image.ReadError.InvalidData;
         if (!std.mem.eql(u8, magic, DDS_FILE_MAGIC[0..])) {
             return Image.ReadError.InvalidData;
@@ -243,13 +170,47 @@ pub const DDS = struct {
             const fourCC = std.meta.stringToEnum(FourCC, self.header.pf.fourCC[0..]) orelse {
                 return Image.ReadError.Unsupported;
             };
+
             // only difference bewteen DXT2/3 and DXT4/5 is premultiplied alpha (handled by app)
             return switch (fourCC) {
-                .DXT1 => try self.readBC1(allocator, reader),
-                .DXT2, .DXT3 => try self.readBC2(allocator, reader),
-                .DXT4, .DXT5 => try self.readBC3(allocator, reader),
+                .DXT1 => try self.readBC(allocator, reader, bc.BC1Block),
+                .DXT2, .DXT3 => try self.readBC(allocator, reader, bc.BC2Block),
+                .DXT4, .DXT5 => try self.readBC(allocator, reader, bc.BC3Block),
+                .DX10 => try self.readD10(allocator, reader),
             };
-        } else if (self.header.pf.flags.rgb and self.header.pf.flags.alphaPixels) {
+        } else {
+            return self.readNonFourCC(allocator, reader);
+        }
+    }
+
+    fn readD10(self: *DDS, allocator: std.mem.Allocator, reader: *std.Io.Reader) Image.ReadError!color.PixelStorage {
+        _ = allocator;
+        self.header10 = reader.takeStruct(HeaderDXT10, .little) catch return Image.ReadError.InvalidData;
+        return switch (self.header10.dxgiFormat) {
+            else => Image.ReadError.Unsupported,
+        };
+    }
+
+    fn readBC(self: DDS, allocator: std.mem.Allocator, reader: *std.Io.Reader, BCBlock: type) Image.ReadError!color.PixelStorage {
+        const pixels = try color.PixelStorage.init(allocator, .rgba32, @as(usize, self.header.width) * @as(usize, self.header.height));
+        errdefer pixels.deinit(allocator);
+
+        const block_width = (self.header.width / 4);
+        const block_height = (self.header.height / 4);
+        const num_blocks = block_width * block_height;
+
+        for (0..num_blocks) |block_id| {
+            const x_start = (block_id % block_width) * 4;
+            const y_start = (block_id / block_width) * 4;
+            try BCBlock.decode(reader, pixels, x_start, y_start, self.header.width);
+        }
+        return pixels;
+    }
+
+    fn readNonFourCC(self: DDS, allocator: std.mem.Allocator, reader: *std.Io.Reader) Image.ReadError!color.PixelStorage {
+        // always valid unless fourCC is set
+
+        if (self.header.pf.flags.rgb and self.header.pf.flags.alphaPixels) {
             return switch (self.header.pf.rgbBitCount) {
                 32 => try self.readUncompressedRGBA(allocator, reader),
                 else => {
@@ -285,107 +246,6 @@ pub const DDS = struct {
         } else {
             return Image.ReadError.Unsupported;
         }
-    }
-
-    fn readBC3(self: DDS, allocator: std.mem.Allocator, reader: *std.Io.Reader) Image.ReadError!color.PixelStorage {
-        const pixels = try color.PixelStorage.init(allocator, .rgba32, @as(usize, self.header.width) * @as(usize, self.header.height));
-        errdefer pixels.deinit(allocator);
-
-        const block_width = (self.header.width / 4);
-        const block_height = (self.header.height / 4);
-        const num_blocks = block_width * block_height;
-
-        for (0..num_blocks) |block_id| {
-            const block = try reader.takeStruct(BC3Block, .little);
-            const alphas = block.getAlphaTable();
-            const colors = block.bc1.getColorTableStd();
-
-            const x_start = (block_id % block_width) * 4;
-            const y_start = (block_id / block_width) * 4;
-
-            for (0..4) |y| {
-                for (0..4) |x| {
-                    const rgb = bitIndex(u32, u2, block.bc1.idxs_color, y * 4 + x);
-                    const a = bitIndex(u48, u3, block.idxs_alpha, y * 4 + x);
-                    pixels.rgba32[(y_start + y) * self.header.width + (x_start + x)] = .{
-                        .r = colors[rgb].r,
-                        .g = colors[rgb].g,
-                        .b = colors[rgb].b,
-                        .a = alphas[a],
-                    };
-                }
-            }
-        }
-
-        return pixels;
-    }
-    fn readBC2(self: DDS, allocator: std.mem.Allocator, reader: *std.Io.Reader) Image.ReadError!color.PixelStorage {
-        const pixels = try color.PixelStorage.init(allocator, .rgba32, @as(usize, self.header.width) * @as(usize, self.header.height));
-        errdefer pixels.deinit(allocator);
-
-        const block_width = (self.header.width / 4);
-        const block_height = (self.header.height / 4);
-        const num_blocks = block_width * block_height;
-
-        for (0..num_blocks) |block_id| {
-            const block = try reader.takeStruct(BC2Block, .little);
-            const colors = block.bc1.getColorTableStd();
-
-            const x_start = (block_id % block_width) * 4;
-            const y_start = (block_id / block_width) * 4;
-
-            for (0..4) |y| {
-                for (0..4) |x| {
-                    const rgb = bitIndex(u32, u2, block.bc1.idxs_color, y * 4 + x);
-                    const a = bitIndex(u64, u4, block.alphas, y * 4 + x);
-                    pixels.rgba32[(y_start + y) * self.header.width + (x_start + x)] = .{
-                        .r = colors[rgb].r,
-                        .g = colors[rgb].g,
-                        .b = colors[rgb].b,
-                        .a = interpolate(u8, 0, 255, a, 16),
-                    };
-                }
-            }
-        }
-
-        return pixels;
-    }
-
-    fn readBC1(self: DDS, allocator: std.mem.Allocator, reader: *std.Io.Reader) Image.ReadError!color.PixelStorage {
-        const pixels = try color.PixelStorage.init(allocator, .rgba32, @as(usize, self.header.width) * @as(usize, self.header.height));
-        errdefer pixels.deinit(allocator);
-
-        const block_width = (self.header.width / 4);
-        const block_height = (self.header.height / 4);
-        const num_blocks = block_width * block_height;
-
-        for (0..num_blocks) |block_id| {
-            const block = try reader.takeStruct(BC1Block, .little);
-
-            const colors = if (block.ref_color_0 > block.ref_color_1)
-                block.getColorTableStd()
-            else
-                block.getColorTableAlpha();
-
-            const has_alpha = !(block.ref_color_0 > block.ref_color_1);
-
-            const x_start = (block_id % block_width) * 4;
-            const y_start = (block_id / block_width) * 4;
-
-            for (0..4) |y| {
-                for (0..4) |x| {
-                    const rgb = bitIndex(u32, u2, block.idxs_color, y * 4 + x);
-                    pixels.rgba32[(y_start + y) * self.header.width + (x_start + x)] = .{
-                        .r = colors[rgb].r,
-                        .g = colors[rgb].g,
-                        .b = colors[rgb].b,
-                        .a = if (has_alpha and rgb == 3) 0 else 255,
-                    };
-                }
-            }
-        }
-
-        return pixels;
     }
 
     fn readUncompressedRGBA(self: DDS, allocator: std.mem.Allocator, reader: *std.Io.Reader) Image.ReadError!color.PixelStorage {
