@@ -1,5 +1,6 @@
 const color = @import("../color.zig");
 const FormatInterface = @import("../FormatInterface.zig");
+const PixelFormat = @import("../pixel_format.zig").PixelFormat;
 const Image = @import("../Image.zig");
 const std = @import("std");
 const io = @import("../io.zig");
@@ -204,107 +205,101 @@ pub const DDS = struct {
         return pixels;
     }
 
+    pub const FormatData = struct {
+        bitCount: u32,
+        rMask: u32 = 0,
+        gMask: u32 = 0,
+        bMask: u32 = 0,
+        aMask: u32 = 0,
+        alphaPixels: bool = false,
+        alpha: bool = false,
+        rgb: bool = false,
+        yuv: bool = false,
+        luminance: bool = false,
+
+        pub fn asHash(self: FormatData) u32 {
+            var adler = std.hash.Adler32{};
+            adler.update(std.mem.asBytes(&self.bitCount));
+            adler.update(std.mem.asBytes(&self.rMask));
+            adler.update(std.mem.asBytes(&self.gMask));
+            adler.update(std.mem.asBytes(&self.bMask));
+            adler.update(std.mem.asBytes(&self.aMask));
+            adler.update(std.mem.asBytes(&@as(u32, @intFromBool(self.alphaPixels))));
+            adler.update(std.mem.asBytes(&@as(u32, @intFromBool(self.alpha))));
+            adler.update(std.mem.asBytes(&@as(u32, @intFromBool(self.rgb))));
+            adler.update(std.mem.asBytes(&@as(u32, @intFromBool(self.yuv))));
+            adler.update(std.mem.asBytes(&@as(u32, @intFromBool(self.luminance))));
+            return adler.adler;
+        }
+
+        pub const a8r8g8b8: FormatData = .{ .bitCount = 32, .rMask = 0xff0000, .gMask = 0xff00, .bMask = 0xff, .aMask = 0xff000000, .alphaPixels = true, .rgb = true };
+        pub const x8r8g8b8: FormatData = .{ .bitCount = 32, .rMask = 0xff0000, .gMask = 0xff00, .bMask = 0xff, .rgb = true };
+        pub const r8g8b8: FormatData = .{ .bitCount = 24, .rMask = 0xff0000, .gMask = 0xff00, .bMask = 0xff, .rgb = true };
+        pub const a8l8: FormatData = .{ .bitCount = 16, .rMask = 0xff, .aMask = 0xff00, .alphaPixels = true, .luminance = true };
+        pub const l8: FormatData = .{ .bitCount = 8, .rMask = 0xff, .luminance = true };
+    };
+
+    pub const FormatInfo = struct {
+        bitCount: u32,
+        fmt: PixelFormat,
+        rloc: ?[]const u8 = null,
+        gloc: ?[]const u8 = null,
+        bloc: ?[]const u8 = null,
+        aloc: ?[]const u8 = null,
+
+        pub const a8r8g8b8: FormatInfo = .{ .bitCount = 32, .fmt = .rgba32, .rloc = "r", .gloc = "g", .bloc = "b", .aloc = "a" };
+        pub const x8r8g8b8: FormatInfo = .{ .bitCount = 32, .fmt = .rgb24, .rloc = "r", .gloc = "g", .bloc = "b" };
+        pub const r8g8b8: FormatInfo = .{ .bitCount = 24, .fmt = .rgb24, .rloc = "r", .gloc = "g", .bloc = "b" };
+        pub const a8l8: FormatInfo = .{ .bitCount = 16, .fmt = .grayscale8Alpha, .rloc = "value", .aloc = "alpha" };
+        pub const l8: FormatInfo = .{ .bitCount = 8, .fmt = .grayscale8, .rloc = "value" };
+    };
+
     fn readNonFourCC(self: DDS, allocator: std.mem.Allocator, reader: *std.Io.Reader) Image.ReadError!color.PixelStorage {
-        if (self.header.pf.flags.rgb and self.header.pf.flags.alphaPixels) {
-            return switch (self.header.pf.rgbBitCount) {
-                32 => try self.readUncompressedRGBA(allocator, reader),
-                else => {
-                    return Image.ReadError.Unsupported;
-                },
-            };
-        } else if (self.header.pf.flags.rgb) {
-            return switch (self.header.pf.rgbBitCount) {
-                24 => try self.readUncompressedRGB(allocator, reader, 24),
-                32 => try self.readUncompressedRGB(allocator, reader, 32),
-                else => {
-                    return Image.ReadError.Unsupported;
-                },
-            };
-        } else if (self.header.pf.flags.alphaPixels) {
-            return switch (self.header.pf.rgbBitCount) {
-                16 => try self.readUncompressedGA(allocator, reader),
-                else => {
-                    return Image.ReadError.Unsupported;
-                },
-            };
-        } else if (self.header.pf.flags.luminance) {
-            return switch (self.header.pf.rgbBitCount) {
-                8 => try self.readUncompressedG(allocator, reader),
-                else => {
-                    return Image.ReadError.Unsupported;
-                },
-            };
-        } else {
-            return Image.ReadError.Unsupported;
-        }
+        const pf = self.header.pf;
+        const cnt = pf.rgbBitCount; // should always be valid at this point
+        const f = pf.flags;
+
+        const fmtHasher = FormatData{
+            .bitCount = cnt,
+            .rMask = if (f.rgb or f.yuv or f.luminance) pf.rBitMask else 0,
+            .gMask = if (f.rgb or f.yuv) pf.gBitMask else 0,
+            .bMask = if (f.rgb or f.yuv) pf.bBitMask else 0,
+            .aMask = if (f.alphaPixels or f.alpha) pf.aBitMask else 0,
+            .alphaPixels = f.alphaPixels,
+            .alpha = f.alpha,
+            .rgb = f.rgb,
+            .yuv = f.yuv,
+            .luminance = f.luminance,
+        };
+
+        return switch (fmtHasher.asHash()) {
+            FormatData.a8r8g8b8.asHash() => try self.readUncompressed(.a8r8g8b8, .a8r8g8b8, allocator, reader),
+            FormatData.x8r8g8b8.asHash() => try self.readUncompressed(.x8r8g8b8, .x8r8g8b8, allocator, reader),
+            FormatData.r8g8b8.asHash() => try self.readUncompressed(.r8g8b8, .r8g8b8, allocator, reader),
+            FormatData.a8l8.asHash() => try self.readUncompressed(.a8l8, .a8l8, allocator, reader),
+            FormatData.l8.asHash() => try self.readUncompressed(.l8, .l8, allocator, reader),
+            else => Image.ReadError.Unsupported,
+        };
     }
 
-    fn readUncompressedRGBA(self: DDS, allocator: std.mem.Allocator, reader: *std.Io.Reader) Image.ReadError!color.PixelStorage {
-        const pixels = try color.PixelStorage.init(allocator, .rgba32, @as(usize, self.header.width) * @as(usize, self.header.height));
+    fn readUncompressed(self: DDS, comptime data: FormatData, comptime info: FormatInfo, allocator: std.mem.Allocator, reader: *std.Io.Reader) !color.PixelStorage {
+        const pixels = try color.PixelStorage.init(allocator, info.fmt, @as(usize, self.header.width) * @as(usize, self.header.height));
         errdefer pixels.deinit(allocator);
+
+        const IntType = @Type(.{ .int = .{ .bits = info.bitCount, .signedness = .unsigned } });
 
         for (0..self.header.height) |y| {
             for (0..self.header.width) |x| {
-                const value: u32 = try reader.takeInt(u32, .little);
-                pixels.rgba32[y * self.header.width + x] = .{
-                    .r = @truncate((value & self.header.pf.rBitMask) >> @intCast(@ctz(self.header.pf.rBitMask))),
-                    .g = @truncate((value & self.header.pf.gBitMask) >> @intCast(@ctz(self.header.pf.gBitMask))),
-                    .b = @truncate((value & self.header.pf.bBitMask) >> @intCast(@ctz(self.header.pf.bBitMask))),
-                    .a = @truncate((value & self.header.pf.aBitMask) >> @intCast(@ctz(self.header.pf.aBitMask))),
-                };
+                const value: IntType = try reader.takeInt(IntType, .little);
+                const entry = &@field(pixels, @tagName(info.fmt))[y * self.header.width + x];
+
+                if (info.rloc) |rl| @field(entry, rl) = @truncate((value & data.rMask) >> @intCast(@ctz(data.rMask)));
+                if (info.gloc) |gl| @field(entry, gl) = @truncate((value & data.gMask) >> @intCast(@ctz(data.gMask)));
+                if (info.bloc) |bl| @field(entry, bl) = @truncate((value & data.bMask) >> @intCast(@ctz(data.bMask)));
+                if (info.aloc) |al| @field(entry, al) = @truncate((value & data.aMask) >> @intCast(@ctz(data.aMask)));
             }
         }
-        return pixels;
-    }
 
-    fn readUncompressedRGB(self: DDS, allocator: std.mem.Allocator, reader: *std.Io.Reader, comptime bitCount: u32) Image.ReadError!color.PixelStorage {
-        const pixels = try color.PixelStorage.init(allocator, .rgb24, @as(usize, self.header.width) * @as(usize, self.header.height));
-        errdefer pixels.deinit(allocator);
-
-        const T = @Type(.{ .int = .{ .bits = bitCount, .signedness = .unsigned } });
-
-        for (0..self.header.height) |y| {
-            for (0..self.header.width) |x| {
-                const value = try reader.takeInt(T, .little);
-                pixels.rgb24[y * self.header.width + x] = .{
-                    .r = @truncate((value & self.header.pf.rBitMask) >> @intCast(@ctz(self.header.pf.rBitMask))),
-                    .g = @truncate((value & self.header.pf.gBitMask) >> @intCast(@ctz(self.header.pf.gBitMask))),
-                    .b = @truncate((value & self.header.pf.bBitMask) >> @intCast(@ctz(self.header.pf.bBitMask))),
-                };
-            }
-        }
-        return pixels;
-    }
-
-    fn readUncompressedGA(self: DDS, allocator: std.mem.Allocator, reader: *std.Io.Reader) Image.ReadError!color.PixelStorage {
-        const pixels = try color.PixelStorage.init(allocator, .grayscale8Alpha, @as(usize, self.header.width) * @as(usize, self.header.height));
-        errdefer pixels.deinit(allocator);
-
-        for (0..self.header.height) |y| {
-            for (0..self.header.width) |x| {
-                const value = try reader.takeInt(u16, .little);
-                pixels.grayscale8Alpha[y * self.header.width + x] = .{
-                    .value = @truncate((value & self.header.pf.rBitMask) >> @intCast(@ctz(self.header.pf.rBitMask))),
-                    .alpha = @truncate((value & self.header.pf.aBitMask) >> @intCast(@ctz(self.header.pf.aBitMask))),
-                };
-            }
-        }
-        return pixels;
-    }
-
-    fn readUncompressedG(self: DDS, allocator: std.mem.Allocator, reader: *std.Io.Reader) Image.ReadError!color.PixelStorage {
-        const pixels = try color.PixelStorage.init(allocator, .grayscale8, @as(usize, self.header.width) * @as(usize, self.header.height));
-        errdefer pixels.deinit(allocator);
-
-        for (0..self.header.height) |y| {
-            for (0..self.header.width) |x| {
-                const value = try reader.takeInt(u8, .little);
-                pixels.grayscale8[y * self.header.width + x] = .{
-                    .value = value,
-                    // .alpha = @truncate((value & self.header.pf.rBitMask) >> @intCast(@ctz(self.header.pf.rBitMask))),
-                };
-            }
-        }
         return pixels;
     }
 };
