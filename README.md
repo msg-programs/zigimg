@@ -62,6 +62,7 @@ zig build test
 | ------------- |:-------------:|:--------------:|
 | ANIM          | ❌            | ❌            |
 | BMP           | ✔️ (Partial)  | ✔️ (Partial)  |
+| DDS           | ✔️ (Partial)  | ❌            |
 | Farbfeld      | ✔️            | ✔️            |
 | GIF           | ✔️            | ✔️            |
 | ICO           | ❌            | ❌            |
@@ -88,6 +89,18 @@ zig build test
 * 24-bit RGB read & write
 * 32-bit RGBA read & write
 * Doesn't support any compression
+
+### DDS - Microsoft DirectDraw Surface
+
+* Supports reading a subset of block compressed formats
+  * BC1 (DXT1)
+  * BC2 (DXT2/3)
+  * BC3 (DXT4/5)
+* Supports reading a subset of uncompressed formats
+  * Color + Alpha: A8R8G8B8
+  * Color: X8R8G8B8, R8G8B8
+  * Grayscale: A8L8, L8
+* For files containting multiple textures such as mipmaps, cubemaps, texture arrays or 3D textures, only the first texture is read
 
 ### GIF - Graphics Interchange Format
 

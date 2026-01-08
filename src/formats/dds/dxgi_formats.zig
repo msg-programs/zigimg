@@ -1,17 +1,4 @@
-pub const MiscFlag2 = enum(u32) {
-    ALPHA_UNKNOWN = 0,
-    ALPHA_STRAIGHT = 1,
-    ALPHA_PREMULTIPLIED = 2,
-    ALPHA_OPAQUE = 3,
-    ALPHA_CUSTOM = 4,
-};
-
-pub const D3D10ResourceDimension = enum(u32) {
-    TEXTURE_1D = 2,
-    TEXTURE_2D = 3,
-    TEXTURE_3D = 4,
-};
-
+// way to big... move to seperate file.
 pub const DXGIFormat = enum(u32) {
     UNKNOWN = 0,
     R32G32B32A32_TYPELESS = 1,

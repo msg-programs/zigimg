@@ -5,14 +5,26 @@ const Image = @import("../Image.zig");
 const std = @import("std");
 const io = @import("../io.zig");
 
-const e = @import("dds/enums.zig");
-const MiscFlag2 = e.MiscFlag2;
-const D3D10ResourceDimension = e.D3D10ResourceDimension;
-const DXGIFormat = e.DXGIFormat;
+const DXGIFormat = @import("dds/dxgi_formats.zig").DXGIFormat;
 
-const bc = @import("dds/bc.zig");
+const bc = @import("dds/block_compression.zig");
+const uncompressed = @import("dds/uncompressed.zig");
 
 const DDS_FILE_MAGIC = "DDS ";
+
+pub const MiscFlag2 = enum(u32) {
+    ALPHA_UNKNOWN = 0,
+    ALPHA_STRAIGHT = 1,
+    ALPHA_PREMULTIPLIED = 2,
+    ALPHA_OPAQUE = 3,
+    ALPHA_CUSTOM = 4,
+};
+
+pub const D3D10ResourceDimension = enum(u32) {
+    TEXTURE_1D = 2,
+    TEXTURE_2D = 3,
+    TEXTURE_3D = 4,
+};
 
 const Header = extern struct {
     size: u32 = 124,
@@ -205,62 +217,12 @@ pub const DDS = struct {
         return pixels;
     }
 
-    pub const FormatData = struct {
-        bitCount: u32,
-        rMask: u32 = 0,
-        gMask: u32 = 0,
-        bMask: u32 = 0,
-        aMask: u32 = 0,
-        alphaPixels: bool = false,
-        alpha: bool = false,
-        rgb: bool = false,
-        yuv: bool = false,
-        luminance: bool = false,
-
-        pub fn asHash(self: FormatData) u32 {
-            var adler = std.hash.Adler32{};
-            adler.update(std.mem.asBytes(&self.bitCount));
-            adler.update(std.mem.asBytes(&self.rMask));
-            adler.update(std.mem.asBytes(&self.gMask));
-            adler.update(std.mem.asBytes(&self.bMask));
-            adler.update(std.mem.asBytes(&self.aMask));
-            adler.update(std.mem.asBytes(&@as(u32, @intFromBool(self.alphaPixels))));
-            adler.update(std.mem.asBytes(&@as(u32, @intFromBool(self.alpha))));
-            adler.update(std.mem.asBytes(&@as(u32, @intFromBool(self.rgb))));
-            adler.update(std.mem.asBytes(&@as(u32, @intFromBool(self.yuv))));
-            adler.update(std.mem.asBytes(&@as(u32, @intFromBool(self.luminance))));
-            return adler.adler;
-        }
-
-        pub const a8r8g8b8: FormatData = .{ .bitCount = 32, .rMask = 0xff0000, .gMask = 0xff00, .bMask = 0xff, .aMask = 0xff000000, .alphaPixels = true, .rgb = true };
-        pub const x8r8g8b8: FormatData = .{ .bitCount = 32, .rMask = 0xff0000, .gMask = 0xff00, .bMask = 0xff, .rgb = true };
-        pub const r8g8b8: FormatData = .{ .bitCount = 24, .rMask = 0xff0000, .gMask = 0xff00, .bMask = 0xff, .rgb = true };
-        pub const a8l8: FormatData = .{ .bitCount = 16, .rMask = 0xff, .aMask = 0xff00, .alphaPixels = true, .luminance = true };
-        pub const l8: FormatData = .{ .bitCount = 8, .rMask = 0xff, .luminance = true };
-    };
-
-    pub const FormatInfo = struct {
-        bitCount: u32,
-        fmt: PixelFormat,
-        rloc: ?[]const u8 = null,
-        gloc: ?[]const u8 = null,
-        bloc: ?[]const u8 = null,
-        aloc: ?[]const u8 = null,
-
-        pub const a8r8g8b8: FormatInfo = .{ .bitCount = 32, .fmt = .rgba32, .rloc = "r", .gloc = "g", .bloc = "b", .aloc = "a" };
-        pub const x8r8g8b8: FormatInfo = .{ .bitCount = 32, .fmt = .rgb24, .rloc = "r", .gloc = "g", .bloc = "b" };
-        pub const r8g8b8: FormatInfo = .{ .bitCount = 24, .fmt = .rgb24, .rloc = "r", .gloc = "g", .bloc = "b" };
-        pub const a8l8: FormatInfo = .{ .bitCount = 16, .fmt = .grayscale8Alpha, .rloc = "value", .aloc = "alpha" };
-        pub const l8: FormatInfo = .{ .bitCount = 8, .fmt = .grayscale8, .rloc = "value" };
-    };
-
     fn readNonFourCC(self: DDS, allocator: std.mem.Allocator, reader: *std.Io.Reader) Image.ReadError!color.PixelStorage {
         const pf = self.header.pf;
         const cnt = pf.rgbBitCount; // should always be valid at this point
         const f = pf.flags;
 
-        const fmtHasher = FormatData{
-            .bitCount = cnt,
+        const readInfo = uncompressed.ReadInfo{
             .rMask = if (f.rgb or f.yuv or f.luminance) pf.rBitMask else 0,
             .gMask = if (f.rgb or f.yuv) pf.gBitMask else 0,
             .bMask = if (f.rgb or f.yuv) pf.bBitMask else 0,
@@ -272,18 +234,16 @@ pub const DDS = struct {
             .luminance = f.luminance,
         };
 
-        return switch (fmtHasher.asHash()) {
-            FormatData.a8r8g8b8.asHash() => try self.readUncompressed(.a8r8g8b8, .a8r8g8b8, allocator, reader),
-            FormatData.x8r8g8b8.asHash() => try self.readUncompressed(.x8r8g8b8, .x8r8g8b8, allocator, reader),
-            FormatData.r8g8b8.asHash() => try self.readUncompressed(.r8g8b8, .r8g8b8, allocator, reader),
-            FormatData.a8l8.asHash() => try self.readUncompressed(.a8l8, .a8l8, allocator, reader),
-            FormatData.l8.asHash() => try self.readUncompressed(.l8, .l8, allocator, reader),
-            else => Image.ReadError.Unsupported,
+        const magic = std.enums.fromInt(uncompressed.FormatMagic, readInfo.toMagic(cnt)) orelse return error.Unsupported;
+        return switch (magic) {
+            inline else => |fmt| self.readUncompressed(fmt, allocator, reader),
         };
     }
 
-    fn readUncompressed(self: DDS, comptime data: FormatData, comptime info: FormatInfo, allocator: std.mem.Allocator, reader: *std.Io.Reader) !color.PixelStorage {
-        const pixels = try color.PixelStorage.init(allocator, info.fmt, @as(usize, self.header.width) * @as(usize, self.header.height));
+    fn readUncompressed(self: DDS, comptime format: uncompressed.FormatMagic, allocator: std.mem.Allocator, reader: *std.Io.Reader) !color.PixelStorage {
+        const info = comptime format.toInfo();
+
+        const pixels = try color.PixelStorage.init(allocator, info.writeInfo.pixelFmt, @as(usize, self.header.width) * @as(usize, self.header.height));
         errdefer pixels.deinit(allocator);
 
         const IntType = @Type(.{ .int = .{ .bits = info.bitCount, .signedness = .unsigned } });
@@ -291,12 +251,12 @@ pub const DDS = struct {
         for (0..self.header.height) |y| {
             for (0..self.header.width) |x| {
                 const value: IntType = try reader.takeInt(IntType, .little);
-                const entry = &@field(pixels, @tagName(info.fmt))[y * self.header.width + x];
+                const entry = &@field(pixels, @tagName(info.writeInfo.pixelFmt))[y * self.header.width + x];
 
-                if (info.rloc) |rl| @field(entry, rl) = @truncate((value & data.rMask) >> @intCast(@ctz(data.rMask)));
-                if (info.gloc) |gl| @field(entry, gl) = @truncate((value & data.gMask) >> @intCast(@ctz(data.gMask)));
-                if (info.bloc) |bl| @field(entry, bl) = @truncate((value & data.bMask) >> @intCast(@ctz(data.bMask)));
-                if (info.aloc) |al| @field(entry, al) = @truncate((value & data.aMask) >> @intCast(@ctz(data.aMask)));
+                if (info.writeInfo.rloc) |rl| @field(entry, rl) = @truncate((value & info.readInfo.rMask) >> @intCast(@ctz(info.readInfo.rMask)));
+                if (info.writeInfo.gloc) |gl| @field(entry, gl) = @truncate((value & info.readInfo.gMask) >> @intCast(@ctz(info.readInfo.gMask)));
+                if (info.writeInfo.bloc) |bl| @field(entry, bl) = @truncate((value & info.readInfo.bMask) >> @intCast(@ctz(info.readInfo.bMask)));
+                if (info.writeInfo.aloc) |al| @field(entry, al) = @truncate((value & info.readInfo.aMask) >> @intCast(@ctz(info.readInfo.aMask)));
             }
         }
 

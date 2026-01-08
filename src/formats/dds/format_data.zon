@@ -1,0 +1,27 @@
+.{
+    .a8r8g8b8 = .{
+        .bitCount = 32,
+        .readInfo = .{ .rMask = 0xff0000, .gMask = 0xff00, .bMask = 0xff, .aMask = 0xff000000, .alphaPixels = true, .rgb = true },
+        .writeInfo = .{ .pixelFmt = .rgba32, .rloc = "r", .gloc = "g", .bloc = "b", .aloc = "a" },
+    },
+    .x8r8g8b8 = .{
+        .bitCount = 32,
+        .readInfo = .{ .rMask = 0xff0000, .gMask = 0xff00, .bMask = 0xff, .rgb = true },
+        .writeInfo = .{ .pixelFmt = .rgb24, .rloc = "r", .gloc = "g", .bloc = "b" },
+    },
+    .r8g8b8 = .{
+        .bitCount = 24,
+        .readInfo = .{ .rMask = 0xff0000, .gMask = 0xff00, .bMask = 0xff, .rgb = true },
+        .writeInfo = .{ .pixelFmt = .rgb24, .rloc = "r", .gloc = "g", .bloc = "b" },
+    },
+    .a8l8 = .{
+        .bitCount = 16,
+        .readInfo = .{ .rMask = 0xff, .aMask = 0xff00, .alphaPixels = true, .luminance = true },
+        .writeInfo = .{ .pixelFmt = .grayscale8Alpha, .rloc = "value", .aloc = "alpha" },
+    },
+    .l8 = .{
+        .bitCount = 8,
+        .readInfo = .{ .rMask = 0xff, .luminance = true },
+        .writeInfo = .{ .pixelFmt = .grayscale8, .rloc = "value" },
+    },
+}
