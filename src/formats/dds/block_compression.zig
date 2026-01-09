@@ -93,7 +93,7 @@ pub const BC2Block = packed struct(u128) {
                     .r = colors[rgb].r,
                     .g = colors[rgb].g,
                     .b = colors[rgb].b,
-                    .a = interpolate(u8, 0, 255, a, 16),
+                    .a = interpolate(u8, 0, 255, a, 15),
                 };
             }
         }
