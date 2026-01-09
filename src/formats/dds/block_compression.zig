@@ -1,16 +1,16 @@
 const color = @import("../../color.zig");
 const std = @import("std");
 
-// fast and loose
 fn bitIndex(Source: type, Dest: type, value: Source, index: usize) Dest {
     const nbits = @typeInfo(Dest).int.bits;
     const shift = index * nbits;
     return @truncate(value >> @intCast(shift));
 }
 
-// fast and loose
 fn interpolate(T: type, from: T, to: T, index: usize, steps: usize) T {
-    return @intCast((steps - index) * @as(usize, from) / steps + index * @as(usize, to) / steps);
+    const left = (steps - index) * @as(usize, from);
+    const right = index * @as(usize, to);
+    return @intCast((left + right) / steps);
 }
 
 pub const BC1Block = packed struct(u64) {
