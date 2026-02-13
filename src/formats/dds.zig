@@ -194,9 +194,10 @@ pub const DDS = struct {
     }
 
     fn readD10(self: *DDS, allocator: std.mem.Allocator, reader: *std.Io.Reader) Image.ReadError!color.PixelStorage {
-        _ = allocator;
         self.header10 = reader.takeStruct(HeaderDXT10, .little) catch return Image.ReadError.InvalidData;
+        std.debug.print("{}\n", .{self.header10});
         return switch (self.header10.dxgiFormat) {
+            .BC7_UNORM, .BC7_UNORM_SRGB => try self.readBC(allocator, reader, bc.BC7Block),
             else => Image.ReadError.Unsupported,
         };
     }
